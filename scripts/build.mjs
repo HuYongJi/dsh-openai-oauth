@@ -1,0 +1,14 @@
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+const root = new URL('../', import.meta.url);
+await mkdir(new URL('lib/', root), { recursive: true });
+const host = await readFile(new URL('src/host.js', root), 'utf8');
+const client = await readFile(new URL('src/client.js', root), 'utf8');
+const body = client.replace(/^export /gm, '');
+if (/^export /m.test(body)) throw new Error('Unexpected client export');
+const bundle = `// Generated DSH 0.2 plugin. See LICENSE and README.md.\nwindow.__ModuleLoader__.load({\n  id: "dsh-openai-oauth",\n  factory: (require) => {\n${body}\n    return createClientPlugin(require);\n  }\n});\n`;
+await writeFile(new URL('lib/index.js', root), host, 'utf8');
+await writeFile(new URL('lib/fast.js', root), await readFile(new URL('src/fast.js', root), 'utf8'), 'utf8');
+await writeFile(new URL('lib/client.js', root), bundle, 'utf8');
+await writeFile(new URL('lib/verify.js', root), await readFile(new URL('src/verify.js', root), 'utf8'), 'utf8');
+console.log('Built Host and client bundle at ' + fileURLToPath(new URL('lib/', root)));

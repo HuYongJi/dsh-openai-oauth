@@ -1,0 +1,37 @@
+{
+  "name": "dsh-openai-oauth",
+  "version": "0.2.0",
+  "description": "Local ChatGPT OAuth settings UI and optional Codex Fast switch for DeepSeek Harness Desktop",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-models",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test --test-isolation=none",
+    "check": "node --check src/host.js && node --check src/client.js && node --check src/fast.js && node --check scripts/setup.mjs && node --test --test-isolation=none && node scripts/build.mjs && node --check lib/index.js && node --check lib/client.js"
+  },
+  "engines": { "node": ">=22.19.0" },
+  "license": "MIT",
+  "upstream": {
+    "repository": "https://github.com/AdonisSheldon/dsh-openai-oauth",
+    "commit": "ba29660530fe05779b06f129a0c0ed5c2237b73f",
+    "note": "Compatibility adaptation using native DSH 0.2 authorization and credentials."
+  }
+}

@@ -1,0 +1,20 @@
+# Local settings, OAuth artifacts, logs and profile backups are never release files.
+fast-mode.json
+runtime-verification-*.json
+backup/
+*.before-openai-oauth-*.bak
+cordis.patch.yml
+*.local.yml
+.env
+.env.*
+*.pem
+*.p12
+*.key
+credentials.json
+**/credentials.json
+*.log
+*.tmp
+node_modules/
+pnpm-lock.yaml
+coverage/
+.dsh/
