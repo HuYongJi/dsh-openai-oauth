@@ -183,6 +183,177 @@ test('Fast control is off by default, gated by sign-in and backend support', () 
   assert.equal(render({ loggedIn: true, apiKeyOverride: true }).find(node => node.children.includes('fastEnable')).props.disabled, true);
 });
 
+function createCardRenderer(t) {
+  const entries = [];
+  const cleanup = [];
+  let messages;
+  const react = {
+    createElement(type, props, ...children) { return { type, props: props ?? {}, children }; },
+    useState(initial) { return [initial, () => {}]; }, useRef(initial) { return { current: initial }; }, useEffect() {},
+    useSyncExternalStore(_subscribe, getSnapshot) { return getSnapshot(); },
+  };
+  const plugin = createClientPlugin(id => id === 'react' ? react : { Button: 'Button', Modal: 'Modal', writeClipboard: async () => true });
+  plugin.apply({
+    effect(fn) { const dispose = fn(); if (dispose) cleanup.push(dispose); },
+    locale: { register(_namespace, value) { messages = value; }, bind() { return key => key; } },
+    slots: { inject(_name, fn) { fn(); }, register(_options, component) { entries.push(component); return () => {}; } },
+    remote: { $on() { return () => {}; } }, on() {},
+  });
+  t.after(() => cleanup.forEach(dispose => dispose()));
+  const flatten = value => value && typeof value === 'object' ? [value, ...(value.children ?? []).flatMap(flatten)] : [];
+  return (controller, language = 'en', slotIndex = 0) => flatten(entries[slotIndex]({ controller,
+    t: key => key.split('.').reduce((value, part) => value[part], messages[language]),
+  }));
+}
+
+for (const [language, labels] of Object.entries({
+  en: { browser: 'Sign in with ChatGPT', browserAgain: 'Sign in again with ChatGPT', signingIn: 'Signing in…',
+    statusLabel: 'Login status', states: { signedOut: 'Not signed in', signingIn: 'Signing in…', signedIn: 'Signed in' } },
+  zh: { browser: '登录 ChatGPT', browserAgain: '重新登录 ChatGPT', signingIn: '正在登录…',
+    statusLabel: '登录状态', states: { signedOut: '未登录', signingIn: '登录中…', signedIn: '已登录' } },
+})) {
+  test(`login button changes after authorization and resets after logout (${language})`, async t => {
+    const render = createCardRenderer(t);
+    const modes = [];
+    let loggedIn = false;
+    const controller = createController(async (url, options) => {
+      if (url.endsWith('/start')) {
+        modes.push(JSON.parse(options.body).mode);
+        loggedIn = true;
+        // Saved authorization is enough even if enabling the model route failed.
+        return streamFrames([{ type: 'completed', outcome: 'authorized', routeError: 'CONFLICT', status: { ...status, loggedIn } }]);
+      }
+      if (url.endsWith('/logout')) loggedIn = false;
+      return jsonStatus({ loggedIn });
+    });
+    t.after(() => controller.dispose());
+    let pendingStart;
+    const start = controller.start;
+    controller.start = mode => (pendingStart = start(mode));
+    const assertButton = (label, variant, busy = false) => {
+      for (const slotIndex of [0, 1]) {
+        const nodes = render(controller, language, slotIndex);
+        const button = nodes.find(node => node.type === 'Button');
+        assert.deepEqual(button.children, [label]);
+        assert.equal(button.props.variant, variant);
+        assert.equal(button.props.disabled, busy);
+        assert.equal(button.props['aria-busy'], busy);
+        const badge = nodes.find(node => node.props['data-openai-oauth'] === 'login-status');
+        const loginState = busy ? 'signingIn' : variant === 'outline' ? 'signedIn' : 'signedOut';
+        assert.equal(badge.props['data-state'], loginState);
+        assert.ok(badge.children.includes(labels.statusLabel + ' · ' + labels.states[loginState]));
+        assert.equal(badge.props.role, 'status');
+        assert.equal(badge.props['aria-live'], 'polite');
+        assert.equal(badge.props['aria-atomic'], true);
+      }
+      return render(controller, language).find(node => node.type === 'Button');
+    };
+    await controller.refresh();
+    assertButton(labels.browser, 'primary').props.onClick();
+    assertButton(labels.signingIn, 'primary', true);
+    await pendingStart;
+    assertButton(labels.browserAgain, 'outline').props.onClick();
+    assertButton(labels.signingIn, 'outline', true);
+    await pendingStart;
+    assertButton(labels.browserAgain, 'outline');
+    assert.deepEqual(modes, ['browser', 'browser']);
+    await controller.logout();
+    assertButton(labels.browser, 'primary');
+  });
+}
+
+test('login status distinguishes checking and unknown from signed-out, and recovers on refresh', async t => {
+  const render = createCardRenderer(t);
+  let fail = true;
+  const controller = createController(async () => fail ? new Response('unavailable', { status: 503 }) : jsonStatus({ loggedIn: true }));
+  t.after(() => controller.dispose());
+  const badge = () => render(controller, 'zh').find(node => node.props['data-openai-oauth'] === 'login-status');
+  assert.equal(badge().props['data-state'], 'checking');
+  assert.ok(badge().children.includes('登录状态 · 检查中…'));
+  await controller.refresh();
+  assert.equal(badge().props['data-state'], 'unknown');
+  assert.ok(badge().children.includes('登录状态 · 状态未知'));
+  assert.ok(render(controller).some(node => node.props.role === 'alert'));
+  fail = false;
+  await controller.refresh();
+  assert.equal(badge().props['data-state'], 'signedIn');
+  assert.ok(badge().children.includes('登录状态 · 已登录'));
+});
+
+test('login status follows native state rather than old success messages or unrelated operations', t => {
+  const render = createCardRenderer(t);
+  for (const [snapshot, expected] of [
+    [{ status: { ...status }, message: 'signedIn' }, 'signedOut'],
+    [{ status: { ...status, loggedIn: true }, busy: true }, 'signedIn'],
+    [{ status: { ...status, loggedIn: true }, error: 'LOGIN_FAILED' }, 'signedIn'],
+    [{ status: { ...status, loggedIn: true }, signingIn: true }, 'signingIn'],
+    [{ status: { ...status, inFlight: true } }, 'signingIn'],
+  ]) {
+    const controller = { subscribe() {}, getSnapshot() { return { loading: false, busy: false, signingIn: false, ...snapshot }; } };
+    for (const slotIndex of [0, 1]) {
+      const badge = render(controller, 'en', slotIndex).find(node => node.props['data-openai-oauth'] === 'login-status');
+      assert.equal(badge.props['data-state'], expected);
+      const dot = badge.children.find(child => typeof child === 'object');
+      assert.equal(dot.props['aria-hidden'], true);
+      assert.ok(dot.props.style.backgroundColor);
+      assert.ok(badge.children.some(child => typeof child === 'string' && child.startsWith('Login status · ')));
+    }
+  }
+});
+
+test('normal card has no descriptive paragraphs or duplicate success messages', t => {
+  const render = createCardRenderer(t);
+  for (const language of ['en', 'zh']) {
+    for (const fastMode of [false, true]) {
+      for (const message of [undefined, 'signedIn', 'signedOut', 'enabled', 'fastOn', 'fastOff', 'cancelled', 'waiting']) {
+        const controller = { subscribe() {}, getSnapshot() { return { loading: false, busy: false, signingIn: false, message,
+          status: { ...status, loggedIn: true, routeConfigured: true, fastAvailable: true, fastMode } }; } };
+        const nodes = render(controller, language);
+        assert.equal(nodes.filter(node => node.type === 'p').length, 0);
+        const fastStatus = nodes.find(node => node.props['data-openai-oauth'] === 'fast-status');
+        assert.deepEqual(fastStatus.children, [language === 'zh' ? (fastMode ? '已开启' : '已关闭') : (fastMode ? 'On' : 'Off')]);
+        const fastButton = nodes.find(node => node.type === 'Button' && Object.hasOwn(node.props, 'aria-pressed'));
+        // Keep the allowance warning discoverable without a permanent paragraph.
+        assert.match(fastButton.props.title, /2\.5/);
+        assert.equal(fastButton.props['aria-description'], fastButton.props.title);
+      }
+    }
+  }
+});
+
+test('compact card preserves authorization controls and actionable error messages', t => {
+  const render = createCardRenderer(t);
+  const controller = { subscribe() {}, getSnapshot() { return { loading: false, busy: true, signingIn: true,
+    status: { ...status, loggedIn: true }, message: 'savedNotEnabled', error: 'CONFLICT',
+    notice: { url: 'https://auth.openai.com/oauth/authorize', code: 'TEST-CODE' },
+    prompt: { id: 'prompt1', kind: 'text' } }; } };
+  const nodes = render(controller, 'zh');
+  assert.ok(nodes.some(node => node.type === 'Button' && node.children.includes('取消登录')));
+  assert.ok(nodes.some(node => node.type === 'a' && node.props.href === 'https://auth.openai.com/oauth/authorize'));
+  assert.ok(nodes.some(node => node.type === 'code' && node.children.includes('TEST-CODE')));
+  assert.ok(nodes.some(node => typeof node.type === 'function' && node.type.name === 'Prompt'));
+  assert.ok(nodes.some(node => node.type === 'p' && node.children.some(value => typeof value === 'string' && value.includes('授权已保存'))));
+  assert.ok(nodes.some(node => node.props.role === 'alert'));
+});
+
+test('login and re-login buttons retain loading, busy and permission guards', t => {
+  const render = createCardRenderer(t);
+  for (const loggedIn of [false, true]) {
+    for (const overrides of [
+      { loading: true }, { busy: true },
+      { status: { inFlight: true } }, { status: { available: false } }, { status: { credentialWritable: false } },
+    ]) {
+      const snapshot = { loading: false, busy: false, signingIn: false, ...overrides,
+        status: { ...status, loggedIn, ...overrides.status } };
+      const controller = { subscribe() {}, getSnapshot() { return snapshot; } };
+      const button = render(controller).find(node => node.type === 'Button');
+      assert.equal(button.props.disabled, true);
+      assert.equal(button.props.variant, loggedIn ? 'outline' : 'primary');
+      assert.deepEqual(button.children, [loggedIn ? 'Sign in again with ChatGPT' : 'Sign in with ChatGPT']);
+    }
+  }
+});
+
 test('rendered login controls reflect real OAuth status and avoid password/API-key fields', () => {
   const entries = [];
   const react = {
