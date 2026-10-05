@@ -24,8 +24,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --test --test-isolation=none",
-    "check": "node --check src/host.js && node --check src/client.js && node --check src/fast.js && node --check scripts/setup.mjs && node --test --test-isolation=none && node scripts/build.mjs && node --check lib/index.js && node --check lib/client.js"
+    "test": "node --test",
+    "check": "node --check src/host.js && node --check src/client.js && node --check src/fast.js && node --check scripts/setup.mjs && node --test && node scripts/build.mjs && node --check lib/index.js && node --check lib/client.js"
   },
   "engines": { "node": ">=22.19.0" },
   "license": "MIT",
