@@ -60,11 +60,37 @@ test('foreign or incomplete entries fail without writing backups', async t => {
   const bad = ['- insert:\n    - id: openai-oauth-ui\n      name: file:///old/index.js\n', BEGIN + '\n- insert:\n'];
   for (const text of bad) {
     await writeFile(patch, text);
-    await assert.rejects(setup('install', { patchPath: patch, pluginRoot: root }), /unmarked|Incomplete/);
-    assert.equal(await readFile(patch, 'utf8'), text);
+    for (const action of ['install', 'uninstall']) {
+      await assert.rejects(setup(action, { patchPath: patch, pluginRoot: root }), /unmarked|Incomplete/);
+      assert.equal(await readFile(patch, 'utf8'), text);
+    }
   }
   assert.equal((await readdir(dir)).some(name => name.endsWith('.bak')), false);
   assert.throws(() => patchText(BEGIN + '\n' + END + '\n' + BEGIN + '\n' + END, 'uninstall'), /Ambiguous/);
+});
+
+test('migration removes only the managed entry and preserves preferences and model configuration', async t => {
+  const { patch, root, original, dir } = await fixture(t);
+  const preference = join(dir, 'fast-mode.json');
+  const credentials = join(dir, 'credentials.json');
+  const fastText = '{"version":1,"enabled":true}\n';
+  const credentialText = '{"fixture":"synthetic authorization placeholder"}\n';
+  await writeFile(preference, fastText);
+  await writeFile(credentials, credentialText);
+  await setup('install', { patchPath: patch, pluginRoot: root });
+  const installed = await readFile(patch, 'utf8');
+  const beforeDryRun = (await readdir(dir)).sort();
+  const preview = await setup('uninstall', { patchPath: patch, pluginRoot: root, dryRun: true });
+  assert.equal(preview.changed, true);
+  assert.equal(preview.backup, undefined);
+  assert.equal(await readFile(patch, 'utf8'), installed);
+  assert.deepEqual((await readdir(dir)).sort(), beforeDryRun);
+  const removed = await setup('uninstall', { patchPath: patch, pluginRoot: root });
+  assert.equal(await readFile(removed.backup, 'utf8'), installed);
+  assert.equal(await readFile(patch, 'utf8'), original);
+  assert.equal(await readFile(preference, 'utf8'), fastText);
+  assert.equal(await readFile(credentials, 'utf8'), credentialText);
+  assert.equal((await setup('uninstall', { patchPath: patch, pluginRoot: root })).changed, false);
 });
 
 test('build outputs are required and uninstall never removes unrelated data', async t => {

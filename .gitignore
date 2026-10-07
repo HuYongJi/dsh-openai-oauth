@@ -18,3 +18,6 @@ node_modules/
 pnpm-lock.yaml
 coverage/
 .dsh/
+
+# Locally packed installation archives are release assets, not source files.
+*.tgz

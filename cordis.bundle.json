@@ -1,0 +1,10 @@
+[
+  {
+    "insert": [
+      {
+        "id": "openai-oauth-ui",
+        "name": "dsh-openai-oauth"
+      }
+    ]
+  }
+]

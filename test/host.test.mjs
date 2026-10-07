@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { API, CREDENTIAL_KEY, apply, createBridge, enableRoute, getStatus } from '../src/host.js';
+import { spawn } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { API, CREDENTIAL_KEY, createBridge, enableRoute, getStatus } from '../src/host.js';
 
 function fixture(options = {}) {
   let loggedIn = options.loggedIn ?? false;
@@ -243,12 +247,32 @@ test('route enable checks cancellation after asynchronous status read', async ()
   assert.equal(writes.length, 0);
 });
 
-test('Host registers exact routes only on existing Connection; no raw server, adapter or credential store', () => {
-  const routes = [];
-  const effects = [];
-  const ctx = { connection: { fetch: { register(route) { routes.push(route); } } }, on() {}, effect(factory) { effects.push(factory()); } };
-  apply(ctx);
-  assert.deepEqual(routes.map(route => route.path), ['status', 'start', 'reply', 'cancel', 'enable', 'logout', 'fast'].map(action => API + action));
-  assert.ok(routes.every(route => route.requestBody === 'streaming' && route.methods.length === 1 && route.methods[0] === 'POST'));
-  effects.forEach(dispose => dispose());
+test('Host registers exact routes in an isolated home; no raw server, adapter or credential store', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-oauth-host-test-'));
+  t.after(async () => {
+    assert.equal(dirname(resolve(home)), resolve(tmpdir()));
+    assert.ok(home.startsWith(join(tmpdir(), 'dsh-oauth-host-test-')));
+    await rm(home, { recursive: true, force: true });
+  });
+  // apply() reads the Fast preference immediately. Isolate HOME before importing it.
+  const code = `
+    import assert from 'node:assert/strict';
+    import { homedir } from 'node:os';
+    import { resolve } from 'node:path';
+    import { API, apply } from ${JSON.stringify(new URL('../src/host.js', import.meta.url).href)};
+    assert.equal(resolve(homedir()), resolve(process.env.DSH_TEST_HOME));
+    const routes = [], effects = [];
+    const ctx = { connection: { fetch: { register(route) { routes.push(route); } } }, on() {}, effect(factory) { effects.push(factory()); } };
+    apply(ctx);
+    assert.deepEqual(routes.map(route => route.path), ['status', 'start', 'reply', 'cancel', 'enable', 'logout', 'fast'].map(action => API + action));
+    assert.ok(routes.every(route => route.requestBody === 'streaming' && route.methods.length === 1 && route.methods[0] === 'POST'));
+    await Promise.all(effects.map(dispose => dispose()));
+  `;
+  await new Promise((done, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', code], {
+      env: { ...process.env, HOME: home, USERPROFILE: home, DSH_TEST_HOME: home }, stdio: 'inherit',
+    });
+    child.once('error', reject);
+    child.once('exit', (code, signal) => code === 0 ? done() : reject(new Error(`Isolated Host test exited with ${code ?? signal}`)));
+  });
 });
